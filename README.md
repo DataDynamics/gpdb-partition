@@ -14,7 +14,7 @@ Greenplum 6.x 파티션 관리 유틸리티 모음.
 - `psycopg2`
 
 ```bash
-pip install psycopg2-binary
+pip3 install psycopg2-binary
 ```
 
 - 대상: **Greenplum 6.x** (시스템 카탈로그 뷰 `pg_partitions`, `pg_partition_columns` 사용)
