@@ -64,7 +64,9 @@ def get_connection(args):
 
 def get_server_version(cur):
     cur.execute("SELECT version();")
-    return cur.fetchone()[0]
+    # 커서가 RealDictCursor 이므로 fetchone() 은 컬럼명을 키로 갖는 dict 를 반환한다.
+    # version() 의 결과 컬럼명은 'version' 이다.
+    return cur.fetchone()["version"]
 
 
 # ---------------------------------------------------------------------------
