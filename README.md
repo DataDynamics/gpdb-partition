@@ -23,8 +23,9 @@ pip3 install psycopg2-binary
 
 ## gp_partition_inspector.py
 
-특정 스키마를 입력받아, 해당 스키마의 모든 베이스 테이블(파티션 루트 포함, 자식 파티션 제외)에 대해
+스키마(`--schema`)를 입력받아, 해당 스키마의 모든 베이스 테이블(파티션 루트 포함, 자식 파티션 제외)에 대해
 파티션 여부 · 파티션 타입 · 파티션 키 컬럼 · 각 파티션의 경계/값을 조사한다.
+`--schema` 를 생략하면 DB 의 모든 사용자 스키마를 순회하며 조사한다.
 
 ### 접속 정보
 
@@ -42,8 +43,8 @@ pip3 install psycopg2-binary
 
 | 옵션 | 설명 |
 |---|---|
-| `--schema` | (필수) 조사할 스키마명 |
-| `--csv <path>` | 결과를 CSV 파일로 저장 (UTF-8 BOM) |
+| `--schema` | 조사할 스키마명. **미지정 시 DB 의 모든 사용자 스키마**를 조사 |
+| `--csv <path>` | 결과를 CSV 파일로 저장 (UTF-8 BOM). 여러 스키마는 `schema` 컬럼으로 구분되어 한 파일에 저장 |
 | `--table` | 결과를 격자(grid) 테이블 형태로 출력 (한글 폭 고려) |
 | `--raw-boundary` | 파티션 값을 DBeaver처럼 카탈로그 원문(`partitionboundary`) 그대로 출력 |
 | `--only-partitioned` | 파티션 테이블만 출력(비파티션 테이블 생략) |
@@ -63,6 +64,9 @@ pip3 install psycopg2-binary
 PGPASSWORD=secret python3 gp_partition_inspector.py \
     --host 10.0.0.10 --port 5432 --dbname mydb --user gpadmin \
     --schema myschema
+
+# --schema 생략 → DB 의 모든 사용자 스키마 조사
+python3 gp_partition_inspector.py --dbname mydb
 
 # 격자 테이블 형태로 출력
 python3 gp_partition_inspector.py --schema myschema --table
