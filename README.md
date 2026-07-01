@@ -10,6 +10,7 @@ Greenplum 6.x 파티션 관리 유틸리티 모음.
 | `gp_partition_size_chart.py` | 단일 테이블의 파티션별 용량을 터미널 막대 차트로 표시하고 용량 이상치(outlier) 파티션을 강조 |
 | `gp_table_size_inspector.py` | 스키마/DB 의 테이블 용량을 큰 순으로 조사(테이블/인덱스/TOAST 분해 + 막대 바) |
 | `gp_skew_inspector.py` | 테이블의 **분산 스큐**(세그먼트 간 데이터 편중)를 점검하고 점검·조치 절차를 제시 |
+| `gp_unused_table_finder.py` | **미사용 테이블 후보** 조사(스캔/DML 통계 + 마지막 작업 시각 + 스냅샷 델타) |
 | `gp_common.py` | 위 스크립트들이 공유하는 헬퍼 모듈(접속·용량/개수 포맷). 단독 실행용 아님 |
 | `requirements.txt` | 파이썬 의존성 목록 (`psycopg2-binary`) |
 
@@ -19,11 +20,13 @@ gpdb-partition/
 ├── gp_partition_size_chart.py  # 파티션 용량 차트 + 이상치 탐지
 ├── gp_table_size_inspector.py  # 테이블 용량 순위 조사(분해 + 막대)
 ├── gp_skew_inspector.py        # 분산 스큐(세그먼트 편중) 점검
+├── gp_unused_table_finder.py   # 미사용 테이블 후보(스캔 통계 + 스냅샷 델타)
 ├── gp_common.py                # 공용 헬퍼(get_connection, human_bytes, human_count)
 └── requirements.txt
 
-의존 관계:  gp_common.py  ←  gp_partition_inspector.py / gp_partition_size_chart.py
-                            /  gp_table_size_inspector.py / gp_skew_inspector.py
+의존 관계:  gp_common.py  ←  gp_partition_inspector.py / gp_partition_size_chart.py /
+                            gp_table_size_inspector.py / gp_skew_inspector.py /
+                            gp_unused_table_finder.py
 ```
 
 > **두 가지 "편중"의 구분**
@@ -382,9 +385,75 @@ python3 gp_skew_inspector.py --schema myschema --table sales --csv skew.csv
 
 이어서 공통 **점검 절차**(분산키 값 분포 → NULL 쏠림 → 카디널리티 → 재분산 → 재점검)가 출력된다.
 
+## gp_unused_table_finder.py
+
+**안 쓰는 테이블 후보**를 찾는다. Greenplum/PostgreSQL 에는 "마지막 SELECT 시각"이 없으므로 다음
+신호를 종합한다:
+
+- **스캔/DML 카운터** (`pg_stat_all_tables`) — 기본은 `gp_dist_random` 으로 **세그먼트 통계를 합산**
+  (뷰에 미지원 시 마스터 통계로 자동 폴백). `seq_scan + idx_scan = 0` 이면 통계 리셋 이후 미읽음.
+- **유지보수 시각** — `last_vacuum` / `last_analyze`.
+- **마지막 DDL 시각** — `pg_stat_operations`(GPDB 전용).
+- **용량** — 정리 우선순위를 위해 함께 표시(파티션 자식까지 합산).
+
+파티션 테이블은 자식 통계를 모두 합산해 판정한다. 상태(STATUS)는 `UNUSED`(스캔·쓰기 모두 0) /
+`WRITE-ONLY`(적재만, 조회 0) / `used` 로 분류하고, 미사용 후보를 위로·용량 큰 순으로 정렬한다.
+
+> **카운터 절대값은 `pg_stat_reset()` 이후 누적값**이라 "0 = 역사상 미사용"을 보장하지 않는다.
+> 확실한 판별은 **스냅샷 델타**를 쓴다: 지금 저장 → 며칠 뒤 비교하여 *그 기간 동안* 안 읽힌 테이블을
+> 가려낸다(`ΔSCANS = 0`).
+
+### 옵션
+
+| 옵션 | 설명 |
+|---|---|
+| `--schema` | 대상 스키마. 미지정 시 DB 의 모든 사용자 스키마 |
+| `--table` | 단일 테이블만 조사 (`--schema` 필요) |
+| `--master-stats` | 세그먼트 합산 대신 마스터 통계만 사용 |
+| `--min-size-mb <float>` | 총 용량이 이 값 미만인 테이블 제외 (기본 0) |
+| `--only-unused` | `UNUSED`/`WRITE-ONLY` 후보만 표시 |
+| `--top <n>` | 상위 N개만 표시 |
+| `--save-snapshot <path>` | 현재 카운터를 JSON 으로 저장 |
+| `--compare-snapshot <path>` | 이전 스냅샷과 비교(기간 델타로 미사용 판별) |
+| `--csv <path>` | 결과를 CSV 로 저장 |
+| `--no-color` / `--color` | 색상 강제 비활성화 / 활성화 |
+| `--timeout <sec>` | 접속 타임아웃(기본 15초) |
+
+### 사용 예
+
+```bash
+# 미사용 후보 조사(용량 큰 순)
+PGPASSWORD=secret python3 gp_unused_table_finder.py \
+    --host 10.0.0.10 --dbname mydb --schema myschema --only-unused
+
+# 스냅샷 저장 → 며칠 뒤 비교(기간 델타)
+python3 gp_unused_table_finder.py --dbname mydb --save-snapshot snap.json
+#   ... 며칠 후 ...
+python3 gp_unused_table_finder.py --dbname mydb --compare-snapshot snap.json
+```
+
+### 출력 예
+
+```
+미사용 테이블 후보 조사  (mydb / sales)
+통계 출처: per-segment   테이블: 3개
+================================================================================
+#  TABLE               SIZE  SCANS  WRITES    ANALYZED     LAST_OP  STATUS
+------------------------------------------------------------------------------
+1  sales.orders     50.0 GB      0       0  2026-01-03  2025-12-01  UNUSED
+2  sales.temp_load   8.0 GB      0    1.0M           -  2026-05-20  WRITE-ONLY
+3  sales.lookup      2.0 GB   5.2K      10  2026-06-15  2024-03-03  used
+------------------------------------------------------------------------------
+미사용/쓰기전용 후보: 2개, 합계 용량 58.0 GB
+→ 정리 전 확인: 참조(FK)·뷰·ETL/외부 연동·백업 여부를 반드시 점검하세요.
+```
+
+`--compare-snapshot` 을 쓰면 `ΔSCANS`/`ΔWRITES` 컬럼이 추가되어, 절대값이 아닌 *기간 변화량*으로
+판정한다(스냅샷에 없던 테이블은 `NEW`).
+
 ## gp_common.py
 
-세 실행 스크립트가 공유하는 헬퍼 모듈이다. **직접 실행하지 않는다.**
+실행 스크립트들이 공유하는 헬퍼 모듈이다. **직접 실행하지 않는다.**
 
 | 함수 | 설명 |
 |---|---|
