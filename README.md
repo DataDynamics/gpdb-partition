@@ -8,6 +8,7 @@ Greenplum 6.x 파티션 관리 유틸리티 모음.
 |---|---|
 | `gp_partition_inspector.py` | 스키마의 모든 테이블에 대해 파티션 키 컬럼과 파티션 값(range 경계 / list 값)을 조사·출력 |
 | `gp_partition_size_chart.py` | 단일 테이블의 파티션별 용량을 터미널 막대 차트로 표시하고 용량 이상치(outlier) 파티션을 강조 |
+| `gp_skew_inspector.py` | 테이블의 **분산 스큐**(세그먼트 간 데이터 편중)를 점검하고 점검·조치 절차를 제시 |
 | `gp_common.py` | 위 스크립트들이 공유하는 헬퍼 모듈(접속·용량 포맷). 단독 실행용 아님 |
 | `requirements.txt` | 파이썬 의존성 목록 (`psycopg2-binary`) |
 
@@ -15,13 +16,19 @@ Greenplum 6.x 파티션 관리 유틸리티 모음.
 gpdb-partition/
 ├── gp_partition_inspector.py   # 파티션 컬럼/값 조사 (+ --size 용량)
 ├── gp_partition_size_chart.py  # 파티션 용량 차트 + 이상치 탐지
+├── gp_skew_inspector.py        # 분산 스큐(세그먼트 편중) 점검
 ├── gp_common.py                # 공용 헬퍼(get_connection, human_bytes)
 └── requirements.txt
 
 의존 관계:  gp_common.py  ←  gp_partition_inspector.py
-                  ↑
-                  └──────────  gp_partition_size_chart.py
+                  ↑↖──────────  gp_partition_size_chart.py
+                  └──────────── gp_skew_inspector.py
 ```
+
+> **두 가지 "편중"의 구분**
+> - **파티션 스큐** (`gp_partition_size_chart.py`): 한 테이블의 *파티션 간* 용량 불균형.
+> - **분산 스큐** (`gp_skew_inspector.py`): 한 테이블의 *세그먼트 간* 행 분포 불균형. `DISTRIBUTED BY`
+>   키가 나쁠 때 발생하며 MPP 성능에 가장 치명적이다.
 
 ## 요구사항
 
@@ -246,9 +253,84 @@ IQR(k=1.5): Q1=253.2 MB  Q3=259.2 MB  상한=268.2 MB  하한=244.2 MB
   [low ] sales_1_prt_p08  2.0 MB
 ```
 
+## gp_skew_inspector.py
+
+테이블의 **분산 스큐**(세그먼트 간 데이터 편중)를 점검한다. `DISTRIBUTED BY` 키가 나쁘면 특정
+세그먼트로 데이터가 몰려 MPP 성능이 급락하는데, 이를 지표로 정량화하고 **무엇을·어떻게 점검·조치**할지
+데이터에 근거해 제시한다. 접속 인자·환경변수는 다른 스크립트와 동일하다.
+
+각 베이스 테이블(파티션 루트 포함, 자식 파티션 제외)에 대해 세그먼트별 행 수를 집계하여:
+
+- `max/avg` — 가장 무거운 세그먼트 ÷ 평균 (1.0 = 완벽, 클수록 편중). **핵심 지표**
+- `CV%` — 세그먼트 간 행 수의 변동계수(표준편차/평균)
+- `empty` — 비어 있는 세그먼트 수 (분산키 카디널리티 부족 신호)
+- **VERDICT** — `max/avg` 기준 `OK`(<1.3) / `WARN`(<2.0) / `CRIT`(≥2.0). 빈 세그먼트가 있으면 최소 `WARN`
+
+스큐가 심한 순으로 정렬한 요약 그리드 + 세그먼트 분포 스파크라인 + **데이터 기반 점검 SQL·재분산
+명령**을 출력하고, 마지막에 공통 **점검 절차 체크리스트**를 제시한다.
+
+> 세그먼트별 행 수는 `count(*)` 스캔이 필요하다. `--min-size-mb`(기본 1MB) 미만 테이블은 스캔을
+> 생략(`SKIP`)하고, `--limit N` 으로 용량 상위 N개만 점검해 비용을 제한할 수 있다. 읽기 전용 세션이다.
+
+### 옵션
+
+| 옵션 | 설명 |
+|---|---|
+| `--schema` | 대상 스키마. 미지정 시 DB 의 모든 사용자 스키마 |
+| `--table` | 단일 테이블만 점검 (`--schema` 필요) |
+| `--warn <float>` | WARN 임계치 `max/avg` (기본 1.3) |
+| `--crit <float>` | CRIT 임계치 `max/avg` (기본 2.0) |
+| `--min-size-mb <float>` | 이 크기 미만 테이블은 스캔 생략 (기본 1MB) |
+| `--limit <n>` | 용량 상위 N개 테이블만 스캔 |
+| `--only-skewed` | WARN/CRIT 테이블만 표시 |
+| `--csv <path>` | 지표를 CSV 로 저장 |
+| `--no-color` / `--color` | 색상 강제 비활성화 / 활성화 |
+| `--timeout <sec>` | 접속 타임아웃(기본 15초) |
+
+### 사용 예
+
+```bash
+# 스키마 전체 점검
+PGPASSWORD=secret python3 gp_skew_inspector.py \
+    --host 10.0.0.10 --dbname mydb --schema myschema
+
+# DB 전체에서 스큐 있는 것만
+python3 gp_skew_inspector.py --dbname mydb --only-skewed
+
+# 단일 테이블 + CSV 저장
+python3 gp_skew_inspector.py --schema myschema --table sales --csv skew.csv
+```
+
+### 출력 예
+
+```
+분산 스큐 점검 (distribution skew)
+프라이머리 세그먼트: 8개   임계치: WARN max/avg≥1.3, CRIT max/avg≥2.0   대상 테이블: 3개
+==============================================================================
+#  TABLE         DIST               ROWS    SIZE  MAX/AVG  CV%  EMPTY  VERDICT
+------------------------------------------------------------------------------
+1  sales.orders  BY (customer_id)   1.0M  5.0 GB     7.20  235    4/8  CRIT
+2  sales.logs    RANDOMLY          95.0K  1.0 GB     5.05  153    0/8  CRIT
+3  sales.items   BY (item_id)        800  2.0 MB     1.03    2    0/8  OK
+
+▼ 스큐 상세 및 점검 포인트
+
+▶ sales.orders  [CRIT]  max/avg=7.20  CV=235%  empty=4/8
+    분산: DISTRIBUTED BY (customer_id)
+    세그먼트 분포(내림차순): █▁▁▁▁▁▁▁
+      max=900.0K(seg 0)   min=0(빈 세그먼트)   avg=125.0K
+    ▷ 점검: 빈 세그먼트 4개 → 분산키 카디널리티 부족 의심
+        SELECT count(DISTINCT (customer_id)) AS distinct_keys FROM sales.orders;
+        SELECT customer_id, count(*) AS c FROM sales.orders GROUP BY customer_id ORDER BY c DESC LIMIT 20;
+        SELECT sum(CASE WHEN customer_id IS NULL THEN 1 ELSE 0 END) AS null_rows FROM sales.orders;
+    ▷ 조치: ALTER TABLE sales.orders SET DISTRIBUTED BY (<더_균일한_키>) WITH (reorganize=true);
+```
+
+이어서 공통 **점검 절차**(분산키 값 분포 → NULL 쏠림 → 카디널리티 → 재분산 → 재점검)가 출력된다.
+
 ## gp_common.py
 
-두 실행 스크립트가 공유하는 헬퍼 모듈이다. **직접 실행하지 않는다.**
+세 실행 스크립트가 공유하는 헬퍼 모듈이다. **직접 실행하지 않는다.**
 
 | 함수 | 설명 |
 |---|---|
@@ -256,4 +338,4 @@ IQR(k=1.5): Q1=253.2 MB  Q3=259.2 MB  상한=268.2 MB  하한=244.2 MB
 | `human_bytes(n)` | 정수 바이트를 `B`/`KB`/`MB`/`GB`/`TB`/`PB` 문자열로 포맷 (`None` → 빈 문자열) |
 
 접속 인자·환경변수 처리(`--password` 미지정 시 `PGPASSWORD` 또는 프롬프트)와 용량 포맷을 한
-곳에서 관리하여 두 스크립트의 동작을 일치시킨다.
+곳에서 관리하여 스크립트들의 동작을 일치시킨다.
