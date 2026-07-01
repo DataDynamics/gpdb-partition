@@ -70,6 +70,22 @@ def get_server_version(cur):
 
 
 # ---------------------------------------------------------------------------
+# 바이트 → 사람이 읽는 문자열
+# ---------------------------------------------------------------------------
+def human_bytes(n):
+    """정수 바이트를 KB/MB/GB 등으로 포맷. n 이 None 이면 빈 문자열."""
+    if n is None:
+        return ""
+    n = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
+        if abs(n) < 1024.0 or unit == "PB":
+            if unit == "B":
+                return f"{int(n)} {unit}"
+            return f"{n:.1f} {unit}"
+        n /= 1024.0
+
+
+# ---------------------------------------------------------------------------
 # 스키마 내 전체 베이스 테이블(파티션 루트 포함, 자식 파티션 제외)
 # ---------------------------------------------------------------------------
 def list_all_base_tables(cur, schema):
@@ -180,6 +196,45 @@ def fetch_partitions(cur, schema, columns):
 
 
 # ---------------------------------------------------------------------------
+# 파티션(자식 테이블)별 디스크 용량
+# ---------------------------------------------------------------------------
+def fetch_partition_sizes(cur, schema):
+    """반환: dict[child_table] = size_bytes (전 세그먼트 합산, 인덱스/TOAST 포함).
+
+    Greenplum 에서 pg_total_relation_size() 는 마스터가 각 세그먼트로 디스패치하여
+    클러스터 전체 용량을 합산해 돌려준다. 따라서 각 파티션의 실제 자식 테이블
+    (partitiontablename)에 대해 호출하면 파티션별 실제 차지 용량을 얻는다.
+    """
+    cur.execute(
+        """
+        SELECT partitiontablename AS child_table,
+               pg_total_relation_size(
+                   quote_ident(schemaname) || '.' || quote_ident(partitiontablename)
+               ) AS size_bytes
+        FROM   pg_partitions
+        WHERE  schemaname = %s;
+        """,
+        (schema,),
+    )
+    sizes = {}
+    for r in cur.fetchall():
+        sizes[r["child_table"]] = r["size_bytes"]
+    return sizes
+
+
+def attach_sizes(partitioned, sizes):
+    """각 파티션에 size_bytes 를 채우고, 테이블별 총용량(total_size)을 계산한다."""
+    for info in partitioned.values():
+        total = 0
+        for p in info["partitions"]:
+            sz = sizes.get(p.get("child_table"))
+            p["size_bytes"] = sz
+            if sz is not None:
+                total += sz
+        info["total_size"] = total
+
+
+# ---------------------------------------------------------------------------
 # 파티션 1건 → 사람이 읽는 경계 문자열
 # ---------------------------------------------------------------------------
 def describe_partition(p, raw=False):
@@ -212,7 +267,7 @@ def describe_partition(p, raw=False):
 # ---------------------------------------------------------------------------
 # 출력
 # ---------------------------------------------------------------------------
-def print_report(schema, all_tables, partitioned, raw=False):
+def print_report(schema, all_tables, partitioned, raw=False, with_size=False):
     line = "=" * 72
     print(line)
     print(f"스키마: {schema}")
@@ -228,39 +283,50 @@ def print_report(schema, all_tables, partitioned, raw=False):
             keystr = " | ".join(key_parts) if key_parts else "(키 정보 없음)"
 
             parts = info["partitions"]
-            print(f"\n[{t}]  ▶ 파티션됨  타입={info['type'] or '?'}  파티션수={len(parts)}")
+            header = f"\n[{t}]  ▶ 파티션됨  타입={info['type'] or '?'}  파티션수={len(parts)}"
+            if with_size:
+                header += f"  총용량={human_bytes(info.get('total_size'))}"
+            print(header)
             print(f"    파티션 키 : {keystr}")
             print(f"    파티션 목록:")
             for p in parts:
                 indent = "      " + ("  " * p.get("level", 0))
-                print(f"{indent}- {p['name']:40s} {describe_partition(p, raw)}")
+                boundary = describe_partition(p, raw)
+                if with_size:
+                    size_str = human_bytes(p.get("size_bytes"))
+                    print(f"{indent}- {p['name']:40s} {boundary:40s} {size_str:>10}")
+                else:
+                    print(f"{indent}- {p['name']:40s} {boundary}")
         else:
             print(f"\n[{t}]  ▶ 파티션 아님")
     print()
 
 
-def write_csv(path, schema, partitioned, raw=False):
+def write_csv(path, schema, partitioned, raw=False, with_size=False):
+    header = [
+        "schema", "table", "partition_type", "partition_key",
+        "level", "partition_name", "child_table", "partition_value",
+    ]
+    if with_size:
+        header += ["size_bytes", "size_pretty"]
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(
-            [
-                "schema", "table", "partition_type", "partition_key",
-                "level", "partition_name", "child_table", "partition_value",
-            ]
-        )
+        w.writerow(header)
         for t, info in partitioned.items():
             ncols = info.get("columns", {})
             keystr = "; ".join(
                 f"L{lvl}:" + ",".join(ncols[lvl]) for lvl in sorted(ncols.keys())
             )
             for p in info["partitions"]:
-                w.writerow(
-                    [
-                        schema, t, info["type"], keystr,
-                        p.get("level", ""), p["name"],
-                        p.get("child_table", ""), describe_partition(p, raw),
-                    ]
-                )
+                row = [
+                    schema, t, info["type"], keystr,
+                    p.get("level", ""), p["name"],
+                    p.get("child_table", ""), describe_partition(p, raw),
+                ]
+                if with_size:
+                    sz = p.get("size_bytes")
+                    row += ["" if sz is None else sz, human_bytes(sz)]
+                w.writerow(row)
     print(f"CSV 저장 완료: {path}")
 
 
@@ -271,9 +337,14 @@ HEADERS = [
     "table", "partitioned", "type", "partition_key",
     "level", "partition_name", "partition_value",
 ]
+SIZE_HEADERS = ["size", "size_bytes"]
 
 
-def build_rows(all_tables, partitioned, only_partitioned=False, raw=False):
+def build_headers(with_size=False):
+    return HEADERS + SIZE_HEADERS if with_size else list(HEADERS)
+
+
+def build_rows(all_tables, partitioned, only_partitioned=False, raw=False, with_size=False):
     rows = []
     for t in all_tables:
         if t in partitioned:
@@ -283,12 +354,19 @@ def build_rows(all_tables, partitioned, only_partitioned=False, raw=False):
                 f"L{lvl}:" + ",".join(ncols[lvl]) for lvl in sorted(ncols.keys())
             )
             for p in info["partitions"]:
-                rows.append([
+                row = [
                     t, "Y", info["type"], keystr,
                     str(p.get("level", "")), p["name"], describe_partition(p, raw),
-                ])
+                ]
+                if with_size:
+                    sz = p.get("size_bytes")
+                    row += [human_bytes(sz), "" if sz is None else str(sz)]
+                rows.append(row)
         elif not only_partitioned:
-            rows.append([t, "N", "", "", "", "", ""])
+            row = [t, "N", "", "", "", "", ""]
+            if with_size:
+                row += ["", ""]
+            rows.append(row)
     return rows
 
 
@@ -323,15 +401,16 @@ def render_table(headers, rows):
     return "\n".join(out)
 
 
-def print_table(schema, all_tables, partitioned, only_partitioned=False, raw=False):
+def print_table(schema, all_tables, partitioned, only_partitioned=False, raw=False,
+                with_size=False):
     print("=" * 72)
     print(f"스키마: {schema}")
     print("=" * 72)
-    rows = build_rows(all_tables, partitioned, only_partitioned, raw)
+    rows = build_rows(all_tables, partitioned, only_partitioned, raw, with_size)
     if not rows:
         print("(표시할 테이블 없음)")
         return
-    print(render_table(HEADERS, rows))
+    print(render_table(build_headers(with_size), rows))
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +443,11 @@ def parse_args():
         action="store_true",
         help="파티션 테이블만 출력(비파티션 테이블 생략)",
     )
+    ap.add_argument(
+        "--size",
+        action="store_true",
+        help="파티션별 디스크 용량(인덱스/TOAST 포함, 전 세그먼트 합산)을 함께 표시",
+    )
     return ap.parse_args()
 
 
@@ -378,6 +462,10 @@ def main():
     partitioned = fetch_partitions(cur, args.schema, columns)
     all_tables = list_all_base_tables(cur, args.schema)
 
+    if args.size:
+        sizes = fetch_partition_sizes(cur, args.schema)
+        attach_sizes(partitioned, sizes)
+
     if not all_tables:
         print(f"\n경고: 스키마 '{args.schema}' 에서 테이블을 찾지 못했습니다. "
               f"(스키마명/권한 확인)")
@@ -387,12 +475,13 @@ def main():
 
     raw = args.raw_boundary
     if args.table:
-        print_table(args.schema, all_tables, partitioned, args.only_partitioned, raw)
+        print_table(args.schema, all_tables, partitioned, args.only_partitioned, raw,
+                    args.size)
     else:
-        print_report(args.schema, all_tables, partitioned, raw)
+        print_report(args.schema, all_tables, partitioned, raw, args.size)
 
     if args.csv:
-        write_csv(args.csv, args.schema, partitioned, raw)
+        write_csv(args.csv, args.schema, partitioned, raw, args.size)
 
     cur.close()
     conn.close()
