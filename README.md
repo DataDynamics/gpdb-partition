@@ -45,7 +45,12 @@ pip3 install psycopg2-binary
 | `--table` | 결과를 격자(grid) 테이블 형태로 출력 (한글 폭 고려) |
 | `--raw-boundary` | 파티션 값을 DBeaver처럼 카탈로그 원문(`partitionboundary`) 그대로 출력 |
 | `--only-partitioned` | 파티션 테이블만 출력(비파티션 테이블 생략) |
+| `--size` | 파티션별 디스크 용량을 함께 표시(테이블별 총용량 포함) |
 | `--timeout <sec>` | 접속 타임아웃(기본 15초) |
+
+> `--size` 는 각 파티션의 실제 자식 테이블에 대해 `pg_total_relation_size()` 를 호출한다.
+> Greenplum 에서 이 함수는 전 세그먼트에 걸친 클러스터 전체 용량을 합산하며, 힙 + 인덱스 + TOAST 를
+> 모두 포함한다. `--table` / `--csv` 출력에도 용량 컬럼이 추가된다(CSV: `size_bytes`, `size_pretty`).
 
 > 조사 전용 스크립트로, 읽기 전용(readonly) 세션으로 접속한다.
 
@@ -68,6 +73,12 @@ python3 gp_partition_inspector.py --schema myschema --csv out.csv
 
 # 카탈로그 경계 원문 그대로 출력
 python3 gp_partition_inspector.py --schema myschema --raw-boundary
+
+# 파티션별 용량과 함께 출력
+python3 gp_partition_inspector.py --schema myschema --size
+
+# 격자 테이블 + 용량
+python3 gp_partition_inspector.py --schema myschema --table --size
 ```
 
 ### 출력 예
@@ -85,4 +96,15 @@ python3 gp_partition_inspector.py --schema myschema --raw-boundary
       ...
 
 [customers]  ▶ 파티션 아님
+```
+
+`--size` 를 지정하면 각 파티션의 용량과 테이블별 총용량이 함께 표시된다.
+
+```
+[sales]  ▶ 파티션됨  타입=RANGE  파티션수=12  총용량=3.0 GB
+    파티션 키 : L0: sale_date
+    파티션 목록:
+      - sales_1_prt_p202601      RANGE  [2026-01-01 ~ 2026-02-01)          256.0 MB
+      - sales_1_prt_p202602      RANGE  [2026-02-01 ~ 2026-03-01)          260.5 MB
+      ...
 ```
