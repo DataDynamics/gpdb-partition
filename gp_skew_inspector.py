@@ -45,7 +45,7 @@ except ImportError:
     )
     sys.exit(1)
 
-from gp_common import human_bytes, get_connection
+from gp_common import human_bytes, human_count, get_connection
 
 
 # ---------------------------------------------------------------------------
@@ -60,17 +60,6 @@ GREEN = "\033[32m"
 
 _SPARK = "▁▂▃▄▅▆▇█"
 VERDICT_COLOR = {"OK": GREEN, "WARN": YELLOW, "CRIT": RED, "EMPTY": DIM, "SKIP": DIM}
-
-
-def human_count(n):
-    """행 수를 1.2K / 3.4M 처럼 1000 단위로 축약."""
-    if n is None:
-        return ""
-    n = float(n)
-    for unit in ("", "K", "M", "B", "T"):
-        if abs(n) < 1000.0 or unit == "T":
-            return f"{int(n)}" if unit == "" else f"{n:.1f}{unit}"
-        n /= 1000.0
 
 
 def _dw(s):

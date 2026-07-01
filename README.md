@@ -8,21 +8,22 @@ Greenplum 6.x 파티션 관리 유틸리티 모음.
 |---|---|
 | `gp_partition_inspector.py` | 스키마의 모든 테이블에 대해 파티션 키 컬럼과 파티션 값(range 경계 / list 값)을 조사·출력 |
 | `gp_partition_size_chart.py` | 단일 테이블의 파티션별 용량을 터미널 막대 차트로 표시하고 용량 이상치(outlier) 파티션을 강조 |
+| `gp_table_size_inspector.py` | 스키마/DB 의 테이블 용량을 큰 순으로 조사(테이블/인덱스/TOAST 분해 + 막대 바) |
 | `gp_skew_inspector.py` | 테이블의 **분산 스큐**(세그먼트 간 데이터 편중)를 점검하고 점검·조치 절차를 제시 |
-| `gp_common.py` | 위 스크립트들이 공유하는 헬퍼 모듈(접속·용량 포맷). 단독 실행용 아님 |
+| `gp_common.py` | 위 스크립트들이 공유하는 헬퍼 모듈(접속·용량/개수 포맷). 단독 실행용 아님 |
 | `requirements.txt` | 파이썬 의존성 목록 (`psycopg2-binary`) |
 
 ```
 gpdb-partition/
 ├── gp_partition_inspector.py   # 파티션 컬럼/값 조사 (+ --size 용량)
 ├── gp_partition_size_chart.py  # 파티션 용량 차트 + 이상치 탐지
+├── gp_table_size_inspector.py  # 테이블 용량 순위 조사(분해 + 막대)
 ├── gp_skew_inspector.py        # 분산 스큐(세그먼트 편중) 점검
-├── gp_common.py                # 공용 헬퍼(get_connection, human_bytes)
+├── gp_common.py                # 공용 헬퍼(get_connection, human_bytes, human_count)
 └── requirements.txt
 
-의존 관계:  gp_common.py  ←  gp_partition_inspector.py
-                  ↑↖──────────  gp_partition_size_chart.py
-                  └──────────── gp_skew_inspector.py
+의존 관계:  gp_common.py  ←  gp_partition_inspector.py / gp_partition_size_chart.py
+                            /  gp_table_size_inspector.py / gp_skew_inspector.py
 ```
 
 > **두 가지 "편중"의 구분**
@@ -253,6 +254,59 @@ IQR(k=1.5): Q1=253.2 MB  Q3=259.2 MB  상한=268.2 MB  하한=244.2 MB
   [low ] sales_1_prt_p08  2.0 MB
 ```
 
+## gp_table_size_inspector.py
+
+스키마(또는 DB 전체)의 테이블 **디스크 용량**을 큰 순으로 조사한다. 각 베이스 테이블(파티션 루트
+포함, 자식 파티션 제외)에 대해 파티션 자식까지 합산한 용량을 **테이블 / 인덱스 / TOAST** 로 분해하고
+인라인 막대 바로 시각화한다. 접속 인자·환경변수는 다른 스크립트와 동일하다.
+
+- 용량은 `pg_total_relation_size`·`pg_table_size`·`pg_indexes_size`(전 세그먼트 합산)로 계산.
+- `ROWS≈` 는 `pg_class.reltuples` 추정치(ANALYZE 기반, 스캔 없음).
+- 여러 스키마를 조사하면 하단에 **스키마별 소계**를 함께 표시한다.
+
+### 옵션
+
+| 옵션 | 설명 |
+|---|---|
+| `--schema` | 대상 스키마. 미지정 시 DB 의 모든 사용자 스키마 |
+| `--table` | 단일 테이블만 조사 (`--schema` 필요) |
+| `--sort {total,table,index,toast,rows,name}` | 정렬 기준 (기본 `total`) |
+| `--top <n>` | 상위 N개만 표시 |
+| `--min-size-mb <float>` | 총 용량이 이 값 미만인 테이블 제외 (기본 0) |
+| `--no-bar` | 인라인 막대 바 숨김 |
+| `--csv <path>` | 결과를 CSV 로 저장 |
+| `--no-color` / `--color` | 색상 강제 비활성화 / 활성화 |
+| `--timeout <sec>` | 접속 타임아웃(기본 15초) |
+
+### 사용 예
+
+```bash
+# 스키마 테이블 용량 순위
+PGPASSWORD=secret python3 gp_table_size_inspector.py \
+    --host 10.0.0.10 --dbname mydb --schema myschema
+
+# DB 전체 상위 20개, 인덱스 크기 순
+python3 gp_table_size_inspector.py --dbname mydb --top 20 --sort index
+
+# 단일 테이블 + CSV
+python3 gp_table_size_inspector.py --schema myschema --table sales --csv out.csv
+```
+
+### 출력 예
+
+```
+테이블 용량 조사  (mydb / myschema)
+총 용량: 60.5 GB   테이블: 4개   정렬: total
+==============================================================================
+#  TABLE            PARTS   ROWS≈     TOTAL     TABLE     INDEX     TOAST     %
+-------------------------------------------------------------------------------
+1  sales.orders        12  120.0M   50.0 GB   40.0 GB   10.0 GB    4.0 GB  82.7  ██████████████████
+2  sales.customers      -    5.0M    8.0 GB    7.0 GB    1.0 GB  716.8 MB  13.2  ██▉
+3  sales.items          4    9.0M    2.0 GB    1.5 GB  548.0 MB  150.0 MB   3.3  ▊
+-------------------------------------------------------------------------------
+   합계                    134.3M   60.5 GB   48.9 GB   11.6 GB    4.9 GB  100.0
+```
+
 ## gp_skew_inspector.py
 
 테이블의 **분산 스큐**(세그먼트 간 데이터 편중)를 점검한다. `DISTRIBUTED BY` 키가 나쁘면 특정
@@ -336,6 +390,7 @@ python3 gp_skew_inspector.py --schema myschema --table sales --csv skew.csv
 |---|---|
 | `get_connection(args)` | `args`(host/port/dbname/user/password/timeout)로 **읽기 전용** 세션을 연다 |
 | `human_bytes(n)` | 정수 바이트를 `B`/`KB`/`MB`/`GB`/`TB`/`PB` 문자열로 포맷 (`None` → 빈 문자열) |
+| `human_count(n)` | 개수(행 수 등)를 `1.2K`/`3.4M` 처럼 1000 단위로 축약 (`None` → 빈 문자열) |
 
-접속 인자·환경변수 처리(`--password` 미지정 시 `PGPASSWORD` 또는 프롬프트)와 용량 포맷을 한
+접속 인자·환경변수 처리(`--password` 미지정 시 `PGPASSWORD` 또는 프롬프트)와 용량/개수 포맷을 한
 곳에서 관리하여 스크립트들의 동작을 일치시킨다.

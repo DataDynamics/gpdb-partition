@@ -56,3 +56,14 @@ def human_bytes(n):
                 return f"{int(n)} {unit}"
             return f"{n:.1f} {unit}"
         n /= 1024.0
+
+
+def human_count(n):
+    """행 수 등 개수를 1.2K / 3.4M 처럼 1000 단위로 축약. None → 빈 문자열."""
+    if n is None:
+        return ""
+    n = float(n)
+    for unit in ("", "K", "M", "B", "T"):
+        if abs(n) < 1000.0 or unit == "T":
+            return f"{int(n)}" if unit == "" else f"{n:.1f}{unit}"
+        n /= 1000.0
