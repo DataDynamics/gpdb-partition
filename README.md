@@ -4,22 +4,40 @@ Greenplum 6.x 파티션 관리 유틸리티 모음.
 
 ## 구성
 
-| 스크립트 | 설명 |
+| 파일 | 설명 |
 |---|---|
 | `gp_partition_inspector.py` | 스키마의 모든 테이블에 대해 파티션 키 컬럼과 파티션 값(range 경계 / list 값)을 조사·출력 |
 | `gp_partition_size_chart.py` | 단일 테이블의 파티션별 용량을 터미널 막대 차트로 표시하고 용량 이상치(outlier) 파티션을 강조 |
 | `gp_common.py` | 위 스크립트들이 공유하는 헬퍼 모듈(접속·용량 포맷). 단독 실행용 아님 |
+| `requirements.txt` | 파이썬 의존성 목록 (`psycopg2-binary`) |
+
+```
+gpdb-partition/
+├── gp_partition_inspector.py   # 파티션 컬럼/값 조사 (+ --size 용량)
+├── gp_partition_size_chart.py  # 파티션 용량 차트 + 이상치 탐지
+├── gp_common.py                # 공용 헬퍼(get_connection, human_bytes)
+└── requirements.txt
+
+의존 관계:  gp_common.py  ←  gp_partition_inspector.py
+                  ↑
+                  └──────────  gp_partition_size_chart.py
+```
 
 ## 요구사항
 
-- Python 3
+- Python 3 (표준 라이브러리의 `statistics`, `argparse`, `csv` 등 사용)
 - `psycopg2`
 
 ```bash
+pip3 install -r requirements.txt
+# 또는
 pip3 install psycopg2-binary
 ```
 
 - 대상: **Greenplum 6.x** (시스템 카탈로그 뷰 `pg_partitions`, `pg_partition_columns` 사용)
+- 모든 스크립트는 **읽기 전용(readonly) 세션**으로 접속하며, 조회 외 변경을 수행하지 않는다.
+- 두 실행 스크립트(`gp_partition_inspector.py`, `gp_partition_size_chart.py`)는 `gp_common.py` 를
+  import 하므로 같은 디렉터리에 함께 두고 실행한다.
 
 ## gp_partition_inspector.py
 
@@ -174,3 +192,15 @@ IQR(k=1.5): Q1=253.2 MB  Q3=259.2 MB  상한=268.2 MB  하한=244.2 MB
   [HIGH] sales_1_prt_p06  1.8 GB
   [low ] sales_1_prt_p08  2.0 MB
 ```
+
+## gp_common.py
+
+두 실행 스크립트가 공유하는 헬퍼 모듈이다. **직접 실행하지 않는다.**
+
+| 함수 | 설명 |
+|---|---|
+| `get_connection(args)` | `args`(host/port/dbname/user/password/timeout)로 **읽기 전용** 세션을 연다 |
+| `human_bytes(n)` | 정수 바이트를 `B`/`KB`/`MB`/`GB`/`TB`/`PB` 문자열로 포맷 (`None` → 빈 문자열) |
+
+접속 인자·환경변수 처리(`--password` 미지정 시 `PGPASSWORD` 또는 프롬프트)와 용량 포맷을 한
+곳에서 관리하여 두 스크립트의 동작을 일치시킨다.
