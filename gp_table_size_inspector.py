@@ -134,14 +134,16 @@ def fetch_table_sizes(cur, schema):
     )
     rows = []
     for r in cur.fetchall():
-        total = r["total_bytes"] or 0
-        table = r["table_bytes"] or 0
-        index = r["index_bytes"] or 0
-        heap = r["heap_bytes"] or 0
+        # sum(bigint) 은 numeric → decimal.Decimal 로 오므로 int 로 캐스팅한다.
+        # (Decimal 과 float 혼합 연산 시 TypeError 발생 방지)
+        total = int(r["total_bytes"] or 0)
+        table = int(r["table_bytes"] or 0)
+        index = int(r["index_bytes"] or 0)
+        heap = int(r["heap_bytes"] or 0)
         rows.append({
             "schema": schema,
             "name": r["name"],
-            "parts": r["parts"] or 0,
+            "parts": int(r["parts"] or 0),
             "total": total,
             "table": table,
             "index": index,

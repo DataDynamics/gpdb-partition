@@ -174,7 +174,8 @@ def fetch_sizes(cur, schema):
         """,
         (schema,),
     )
-    return {r["root"]: (r["size_bytes"] or 0) for r in cur.fetchall()}
+    # sum(bigint) 은 numeric → decimal.Decimal 이므로 int 로 캐스팅
+    return {r["root"]: int(r["size_bytes"] or 0) for r in cur.fetchall()}
 
 
 def fetch_segment_rowcounts(cur, schema, table):

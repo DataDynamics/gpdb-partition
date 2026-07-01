@@ -211,11 +211,13 @@ def build_results(roots, stats, maint, lastop):
         for oid in e["oids"]:
             s = stats.get(oid)
             if s:
-                seq += s["seq_scan"] or 0
-                idx += s["idx_scan"] or 0
-                ins += s["ins"] or 0
-                upd += s["upd"] or 0
-                dele += s["del"] or 0
+                # sum(bigint) 은 numeric → decimal.Decimal 로 오므로 int 로 캐스팅한다.
+                # (Decimal 은 json.dump 불가 + float 혼합 연산 시 TypeError)
+                seq += int(s["seq_scan"] or 0)
+                idx += int(s["idx_scan"] or 0)
+                ins += int(s["ins"] or 0)
+                upd += int(s["upd"] or 0)
+                dele += int(s["del"] or 0)
             mt = maint.get(oid)
             if mt:
                 last_vac = _max_ts(last_vac, mt["last_vac"])
