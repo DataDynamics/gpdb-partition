@@ -27,7 +27,6 @@ GPDB 6.x 의 시스템 카탈로그 뷰를 사용:
 
 import argparse
 import csv
-import getpass
 import os
 import sys
 import unicodedata
@@ -41,25 +40,7 @@ except ImportError:
     )
     sys.exit(1)
 
-
-# ---------------------------------------------------------------------------
-# 연결
-# ---------------------------------------------------------------------------
-def get_connection(args):
-    password = args.password or os.environ.get("PGPASSWORD")
-    if not password:
-        password = getpass.getpass(f"Password for {args.user}@{args.host}: ")
-
-    conn = psycopg2.connect(
-        host=args.host,
-        port=args.port,
-        dbname=args.dbname,
-        user=args.user,
-        password=password,
-        connect_timeout=args.timeout,
-    )
-    conn.set_session(readonly=True, autocommit=True)
-    return conn
+from gp_common import get_connection, human_bytes
 
 
 def get_server_version(cur):
@@ -67,22 +48,6 @@ def get_server_version(cur):
     # 커서가 RealDictCursor 이므로 fetchone() 은 컬럼명을 키로 갖는 dict 를 반환한다.
     # version() 의 결과 컬럼명은 'version' 이다.
     return cur.fetchone()["version"]
-
-
-# ---------------------------------------------------------------------------
-# 바이트 → 사람이 읽는 문자열
-# ---------------------------------------------------------------------------
-def human_bytes(n):
-    """정수 바이트를 KB/MB/GB 등으로 포맷. n 이 None 이면 빈 문자열."""
-    if n is None:
-        return ""
-    n = float(n)
-    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
-        if abs(n) < 1024.0 or unit == "PB":
-            if unit == "B":
-                return f"{int(n)} {unit}"
-            return f"{n:.1f} {unit}"
-        n /= 1024.0
 
 
 # ---------------------------------------------------------------------------

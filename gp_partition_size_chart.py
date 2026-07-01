@@ -40,8 +40,8 @@ except ImportError:
     )
     sys.exit(1)
 
-# 공용 헬퍼는 인스펙터 스크립트와 단일 소스로 공유한다.
-from gp_partition_inspector import human_bytes, get_connection
+# 공용 헬퍼는 gp_common 모듈에서 단일 소스로 공유한다.
+from gp_common import human_bytes, get_connection
 
 
 # ---------------------------------------------------------------------------

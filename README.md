@@ -8,6 +8,7 @@ Greenplum 6.x 파티션 관리 유틸리티 모음.
 |---|---|
 | `gp_partition_inspector.py` | 스키마의 모든 테이블에 대해 파티션 키 컬럼과 파티션 값(range 경계 / list 값)을 조사·출력 |
 | `gp_partition_size_chart.py` | 단일 테이블의 파티션별 용량을 터미널 막대 차트로 표시하고 용량 이상치(outlier) 파티션을 강조 |
+| `gp_common.py` | 위 스크립트들이 공유하는 헬퍼 모듈(접속·용량 포맷). 단독 실행용 아님 |
 
 ## 요구사항
 
