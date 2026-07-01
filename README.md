@@ -152,8 +152,8 @@ python3 gp_partition_inspector.py --schema myschema --table --size
 |---|---|
 | `--schema` | (필수) 대상 스키마명 |
 | `--table` | (필수) 대상(루트) 테이블명 |
-| `--method {iqr,mad}` | 이상치 판정 방식 (기본 `iqr`) |
-| `--k <float>` | 이상치 임계 계수 (iqr 기본 1.5, mad 기본 3.5) |
+| `--method {iqr,mad,both}` | 이상치 판정 방식 (기본 `iqr`). `both` = IQR·MAD 를 모두 돌려 비교 |
+| `--k <float>` | 이상치 임계 계수 (iqr 기본 1.5, mad 기본 3.5). `both` 에서는 무시(각 방식 기본값 사용) |
 | `--width <n>` | 막대 최대 폭(칸). 미지정 시 터미널 폭에 맞춤 |
 | `--all-levels` | 리프뿐 아니라 모든 레벨(중간 부모 포함) 표시 |
 | `--no-color` / `--color` | 색상 강제 비활성화 / 활성화 |
@@ -187,6 +187,28 @@ python3 gp_partition_inspector.py --schema myschema --table --size
 - **표본이 4개 미만**이면 사분위/편차 통계가 무의미하므로 판정을 생략한다.
 - 데이터 스큐가 심하면 극단값에 강건한 `--method mad` 를 권장한다.
 
+**3) 두 방식 비교 (`--method both`)**
+
+데이터 편차가 커서 한 방식이 이상치를 못 잡을 때 유용하다. IQR·MAD 를 **각각의 기본
+k(1.5 / 3.5)로** 함께 돌려, 파티션별로 어느 방식이 감지했는지(`HIGH(IQR·MAD)`, `HIGH(MAD)` …)를
+표기하고, 하단에 방식별 감지 집합을 비교한다.
+
+- **공통** — 두 방식이 모두 이상치로 본 파티션
+- **IQR 전용 / MAD 전용** — 한 방식만 감지한 파티션
+
+특히 **강한 우편향(long tail)** 데이터에서는 큰 꼬리값이 `Q3` 를 끌어올려 IQR 울타리가 넓어지면서
+IQR 이 아무것도 못 잡는 경우가 있는데, 이때 중앙값 기반 MAD 는 잡아내므로 **`MAD 전용`** 으로
+드러난다(`← IQR 은 놓친 항목` 으로 표시). 이 경우 `--method mad` 채택을 고려한다.
+
+```
+이상치 비교:
+  IQR 감지 : 0건  [-]
+  MAD 감지 : 3건  [p07(883.0 MB), p06(724.0 MB), p05(353.0 MB)]
+  공통     : 0건  [-]
+  IQR 전용 : 0건  [-]
+  MAD 전용 : 3건  [p07(883.0 MB), p06(724.0 MB), p05(353.0 MB)]   ← IQR 은 놓친 항목
+```
+
 ### 사용 예
 
 ```bash
@@ -196,6 +218,9 @@ PGPASSWORD=secret python3 gp_partition_size_chart.py \
 
 # MAD(수정 z-score) 방식으로 판정
 python3 gp_partition_size_chart.py --schema myschema --table sales --method mad
+
+# IQR·MAD 를 함께 돌려 비교
+python3 gp_partition_size_chart.py --schema myschema --table sales --method both
 
 # 색상 없이(로그 저장용)
 python3 gp_partition_size_chart.py --schema myschema --table sales --no-color

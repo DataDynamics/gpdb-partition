@@ -184,6 +184,54 @@ def _bar(fraction, width):
     return s + " " * max(0, width - full - (1 if rem else 0))
 
 
+def _chart_layout(rows, width):
+    """차트 열 폭(name_w, size_w, bar_w)과 최대 용량을 계산."""
+    term_w = shutil.get_terminal_size((100, 20)).columns
+    name_w = min(max((len(r["name"]) for r in rows), default=4), 32)
+    size_w = max((len(human_bytes(r["size_bytes"])) for r in rows), default=6)
+    if width is not None:
+        bar_w = max(5, width)
+    else:
+        bar_w = max(10, term_w - name_w - size_w - 20)
+    max_size = max((r["size_bytes"] for r in rows), default=0) or 1
+    return name_w, size_w, bar_w, max_size
+
+
+def _bar_line(r, name_w, size_w, bar_w, max_size, marker="", color=None, c=None):
+    """파티션 1건을 'name │bar│ size marker' 형태의 한 줄로."""
+    name = r["name"]
+    if len(name) > name_w:
+        name = name[: name_w - 1] + "…"
+    bar = _bar(r["size_bytes"] / max_size, bar_w)
+    size_str = human_bytes(r["size_bytes"]).rjust(size_w)
+    raw = f"{name.ljust(name_w)} │{bar}│ {size_str}{marker}"
+    return c(color, raw) if (color and c) else raw
+
+
+def _method_line(stats, c):
+    """IQR/MAD 판정 파라미터를 한 줄 요약(없으면 None)."""
+    if stats.get("method") == "iqr" and "high_fence" in stats:
+        return c(DIM, "IQR(k={k}): Q1={q1}  Q3={q3}  상한={hi}  하한={lo}".format(
+            k=stats["k"], q1=human_bytes(stats["q1"]), q3=human_bytes(stats["q3"]),
+            hi=human_bytes(stats["high_fence"]),
+            lo=human_bytes(max(0, stats["low_fence"]))))
+    if stats.get("method") == "mad" and "mad" in stats:
+        return c(DIM, "MAD(k={k}): 중앙값={med}  MAD={mad}".format(
+            k=stats["k"], med=human_bytes(stats["median"]),
+            mad=human_bytes(stats["mad"])))
+    return None
+
+
+def _summary_line(stats):
+    return "총합 {total}   평균 {mean}   중앙값 {median}   최대 {mx}   최소 {mn}".format(
+        total=human_bytes(stats["total"]),
+        mean=human_bytes(stats["mean"]),
+        median=human_bytes(stats["median"]),
+        mx=human_bytes(stats["max"]),
+        mn=human_bytes(stats["min"]),
+    )
+
+
 def render_chart(schema, table, rows, flags, stats, width=None, use_color=True):
     lines = []
     c = (lambda code, s: f"{code}{s}{RESET}") if use_color else (lambda code, s: s)
@@ -196,71 +244,23 @@ def render_chart(schema, table, rows, flags, stats, width=None, use_color=True):
         lines.append("(파티션을 찾지 못했습니다. 스키마/테이블명 또는 파티션 여부를 확인하세요.)")
         return "\n".join(lines)
 
-    # 열 폭 계산
-    term_w = shutil.get_terminal_size((100, 20)).columns
-    name_w = min(max((len(r["name"]) for r in rows), default=4), 32)
-    size_w = max((len(human_bytes(r["size_bytes"])) for r in rows), default=6)
-    marker_w = 8  # " ⚠ HIGH"
-    if width is not None:
-        bar_w = max(5, width)
-    else:
-        bar_w = max(10, term_w - name_w - size_w - marker_w - 6)
-
-    max_size = max((r["size_bytes"] for r in rows), default=0) or 1
+    name_w, size_w, bar_w, max_size = _chart_layout(rows, width)
 
     for r, fl in zip(rows, flags):
-        name = r["name"]
-        if len(name) > name_w:
-            name = name[: name_w - 1] + "…"
-        bar = _bar(r["size_bytes"] / max_size, bar_w)
-        size_str = human_bytes(r["size_bytes"]).rjust(size_w)
-
         if fl == "high":
-            marker = " ⚠ HIGH"
-            color = RED
+            marker, color = " ⚠ HIGH", RED
         elif fl == "low":
-            marker = " ⚠ low"
-            color = YELLOW
+            marker, color = " ⚠ low", YELLOW
         else:
-            marker = ""
-            color = None
-
-        raw = f"{name.ljust(name_w)} │{bar}│ {size_str}{marker}"
-        lines.append(c(color, raw) if color else raw)
+            marker, color = "", None
+        lines.append(_bar_line(r, name_w, size_w, bar_w, max_size, marker, color, c))
 
     # 요약 통계
     lines.append("-" * min(72, name_w + bar_w + size_w + 6))
-    lines.append(
-        "총합 {total}   평균 {mean}   중앙값 {median}   최대 {mx}   최소 {mn}".format(
-            total=human_bytes(stats["total"]),
-            mean=human_bytes(stats["mean"]),
-            median=human_bytes(stats["median"]),
-            mx=human_bytes(stats["max"]),
-            mn=human_bytes(stats["min"]),
-        )
-    )
-
-    if stats.get("method") == "iqr" and "high_fence" in stats:
-        lines.append(
-            c(
-                DIM,
-                "IQR(k={k}): Q1={q1}  Q3={q3}  상한={hi}  하한={lo}".format(
-                    k=stats["k"],
-                    q1=human_bytes(stats["q1"]),
-                    q3=human_bytes(stats["q3"]),
-                    hi=human_bytes(stats["high_fence"]),
-                    lo=human_bytes(max(0, stats["low_fence"])),
-                ),
-            )
-        )
-    elif stats.get("method") == "mad" and "mad" in stats:
-        lines.append(
-            c(DIM, "MAD(k={k}): 중앙값={med}  MAD={mad}".format(
-                k=stats["k"],
-                med=human_bytes(stats["median"]),
-                mad=human_bytes(stats["mad"]),
-            ))
-        )
+    lines.append(_summary_line(stats))
+    ml = _method_line(stats, c)
+    if ml:
+        lines.append(ml)
 
     outliers = [
         (r["name"], fl, r["size_bytes"]) for r, fl in zip(rows, flags) if fl
@@ -275,6 +275,92 @@ def render_chart(schema, table, rows, flags, stats, width=None, use_color=True):
             lines.append(c(color, f"  [{tag}] {name}  {human_bytes(sz)}"))
     else:
         lines.append("이상치 없음.")
+
+    return "\n".join(lines)
+
+
+def render_chart_compare(schema, table, rows, res_iqr, res_mad,
+                         width=None, use_color=True):
+    """IQR 와 MAD 결과를 나란히 비교 표시한다.
+
+    res_iqr / res_mad: detect_outliers() 가 돌려준 (flags, stats) 튜플.
+    각 파티션 라인에는 두 방식이 각각 이상치로 판정했는지를 표기하고,
+    하단에 방식별/공통/전용 집합을 요약한다.
+    """
+    flags_i, stats_i = res_iqr
+    flags_m, stats_m = res_mad
+    lines = []
+    c = (lambda code, s: f"{code}{s}{RESET}") if use_color else (lambda code, s: s)
+
+    title = f"{schema}.{table}  파티션 용량 차트  (파티션 {stats_i['n']}개)  [IQR vs MAD]"
+    lines.append(c(BOLD, title))
+    lines.append("=" * min(88, max(40, len(title) + 2)))
+
+    if not rows:
+        lines.append("(파티션을 찾지 못했습니다. 스키마/테이블명 또는 파티션 여부를 확인하세요.)")
+        return "\n".join(lines)
+
+    name_w, size_w, bar_w, max_size = _chart_layout(rows, width)
+
+    for r, fi, fm in zip(rows, flags_i, flags_m):
+        flagged = [(nm, fl) for nm, fl in (("IQR", fi), ("MAD", fm)) if fl]
+        if flagged:
+            highs = [nm for nm, fl in flagged if fl == "high"]
+            lows = [nm for nm, fl in flagged if fl == "low"]
+            parts = []
+            if highs:
+                parts.append("HIGH(" + "·".join(highs) + ")")
+            if lows:
+                parts.append("low(" + "·".join(lows) + ")")
+            marker = " ⚠ " + "  ".join(parts)
+            color = RED if highs else YELLOW
+        else:
+            marker, color = "", None
+        lines.append(_bar_line(r, name_w, size_w, bar_w, max_size, marker, color, c))
+
+    # 요약 통계 + 두 방식 파라미터
+    lines.append("-" * min(88, name_w + bar_w + size_w + 6))
+    lines.append(_summary_line(stats_i))
+    for ml in (_method_line(stats_i, c), _method_line(stats_m, c)):
+        if ml:
+            lines.append(ml)
+
+    # 표본 부족 등으로 판정을 생략한 경우
+    note = stats_i.get("note") or stats_m.get("note")
+    if note:
+        lines.append(c(DIM, note))
+        return "\n".join(lines)
+
+    # 방식별 집합 비교
+    def sizemap():
+        return {r["name"]: r["size_bytes"] for r in rows}
+
+    szmap = sizemap()
+    iqr_set = {r["name"] for r, fl in zip(rows, flags_i) if fl}
+    mad_set = {r["name"] for r, fl in zip(rows, flags_m) if fl}
+    common = iqr_set & mad_set
+    iqr_only = iqr_set - mad_set
+    mad_only = mad_set - iqr_set
+
+    def fmt_set(names):
+        names = sorted(names, key=lambda n: szmap.get(n, 0), reverse=True)
+        return ", ".join(f"{n}({human_bytes(szmap.get(n))})" for n in names) or "-"
+
+    lines.append(c(BOLD, "이상치 비교:"))
+    lines.append(f"  IQR 감지 : {len(iqr_set)}건  [{fmt_set(iqr_set)}]")
+    lines.append(f"  MAD 감지 : {len(mad_set)}건  [{fmt_set(mad_set)}]")
+    lines.append(f"  공통     : {len(common)}건  [{fmt_set(common)}]")
+    lines.append(f"  IQR 전용 : {len(iqr_only)}건  [{fmt_set(iqr_only)}]")
+    if mad_only:
+        lines.append(
+            c(YELLOW, f"  MAD 전용 : {len(mad_only)}건  [{fmt_set(mad_only)}]"
+                      "   ← IQR 은 놓친 항목")
+        )
+    else:
+        lines.append(f"  MAD 전용 : 0건  [-]")
+
+    if not iqr_set and not mad_set:
+        lines.append("두 방식 모두 이상치 없음.")
 
     return "\n".join(lines)
 
@@ -295,15 +381,16 @@ def parse_args():
     ap.add_argument("--table", required=True, help="대상(루트) 테이블명")
     ap.add_argument(
         "--method",
-        choices=["iqr", "mad"],
+        choices=["iqr", "mad", "both"],
         default="iqr",
-        help="이상치 판정 방식 (기본 iqr)",
+        help="이상치 판정 방식 (기본 iqr). both = IQR·MAD 를 모두 돌려 비교",
     )
     ap.add_argument(
         "--k",
         type=float,
         default=None,
-        help="이상치 임계 계수 (iqr 기본 1.5, mad 기본 3.5)",
+        help="이상치 임계 계수 (iqr 기본 1.5, mad 기본 3.5). "
+             "--method both 에서는 무시되고 각 방식의 기본값을 사용",
     )
     ap.add_argument("--width", type=int, default=None, help="막대 최대 폭(칸)")
     ap.add_argument(
@@ -326,7 +413,6 @@ def main():
         cur, args.schema, args.table, leaf_only=not args.all_levels
     )
     values = [r["size_bytes"] for r in rows]
-    flags, stats = detect_outliers(values, method=args.method, k=args.k)
 
     if args.no_color:
         use_color = False
@@ -335,12 +421,24 @@ def main():
     else:
         use_color = sys.stdout.isatty()
 
-    print(
-        render_chart(
-            args.schema, args.table, rows, flags, stats,
-            width=args.width, use_color=use_color,
+    if args.method == "both":
+        # 각 방식은 자체 기본 k(IQR 1.5 / MAD 3.5)를 사용한다.
+        res_iqr = detect_outliers(values, method="iqr", k=None)
+        res_mad = detect_outliers(values, method="mad", k=None)
+        print(
+            render_chart_compare(
+                args.schema, args.table, rows, res_iqr, res_mad,
+                width=args.width, use_color=use_color,
+            )
         )
-    )
+    else:
+        flags, stats = detect_outliers(values, method=args.method, k=args.k)
+        print(
+            render_chart(
+                args.schema, args.table, rows, flags, stats,
+                width=args.width, use_color=use_color,
+            )
+        )
 
     cur.close()
     conn.close()
